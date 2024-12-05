@@ -2,9 +2,9 @@
  * Description : redis db class
  * Author      : baoc, yanrk
  * Email       : yanrkchina@163.com
- * Version     : 1.0
+ * Version     : 3.0
  * History     :
- * Copyright(C): 2019
+ * Copyright(C): 2023
  ********************************************************/
 
 #ifndef REDIS_DB_H
@@ -46,7 +46,7 @@ public:
     ~RedisDB();
 
 public:
-    bool open(const std::string & host, uint16_t port, const std::string & password, uint16_t table_index, uint32_t timeout = 5000);
+    bool open(const std::string & address, const std::string & username, const std::string & password, uint16_t table = 0, uint32_t timeout = 5000);
     void close();
     bool destroy();
 
@@ -94,6 +94,38 @@ public:
     bool get(const std::string & key, uint64_t & value);
     bool get(const std::string & key, float & value);
     bool get(const std::string & key, double & value);
+
+public:
+    bool clear(const std::string & queue);
+
+public:
+    bool push_back(const std::string & queue, const char * value);
+    bool push_back(const std::string & queue, const std::string & value);
+    bool push_back(const std::string & queue, bool value);
+    bool push_back(const std::string & queue, int8_t value);
+    bool push_back(const std::string & queue, uint8_t value);
+    bool push_back(const std::string & queue, int16_t value);
+    bool push_back(const std::string & queue, uint16_t value);
+    bool push_back(const std::string & queue, int32_t value);
+    bool push_back(const std::string & queue, uint32_t value);
+    bool push_back(const std::string & queue, int64_t value);
+    bool push_back(const std::string & queue, uint64_t value);
+    bool push_back(const std::string & queue, float value);
+    bool push_back(const std::string & queue, double value);
+
+public:
+    bool pop_front(const std::string & queue, std::string & value);
+    bool pop_front(const std::string & queue, bool & value);
+    bool pop_front(const std::string & queue, int8_t & value);
+    bool pop_front(const std::string & queue, uint8_t & value);
+    bool pop_front(const std::string & queue, int16_t & value);
+    bool pop_front(const std::string & queue, uint16_t & value);
+    bool pop_front(const std::string & queue, int32_t & value);
+    bool pop_front(const std::string & queue, uint32_t & value);
+    bool pop_front(const std::string & queue, int64_t & value);
+    bool pop_front(const std::string & queue, uint64_t & value);
+    bool pop_front(const std::string & queue, float & value);
+    bool pop_front(const std::string & queue, double & value);
 
 private:
     RedisDBImpl                       * m_redis_db_impl;

@@ -2,13 +2,16 @@
  * Description : redis db class
  * Author      : baoc, yanrk
  * Email       : yanrkchina@163.com
- * Version     : 1.0
+ * Version     : 3.0
  * History     :
- * Copyright(C): 2019
+ * Copyright(C): 2023
  ********************************************************/
 
-#include "libredis.h"
-
+#ifdef _MSC_VER
+    #include <winsock2.h>
+#else
+    #include <sys/time.h>
+#endif // _MSC_VER
 #include <cstring>
 #include <cstdio>
 #include <string>
@@ -16,6 +19,18 @@
 #include <vector>
 #include <sstream>
 #include "hiredis.h"
+#include "hircluster.h"
+#include "libredis.h"
+
+#if 0 // defined(DEBUG) || defined(_DEBUG)
+    #define RUN_LOG_ERR(fmt, ...) printf(fmt "\n", ##__VA_ARGS__)
+    #define RUN_LOG_TRK(fmt, ...) printf(fmt "\n", ##__VA_ARGS__)
+    #define RUN_LOG_DBG(fmt, ...) printf(fmt "\n", ##__VA_ARGS__)
+#else
+    #define RUN_LOG_ERR(fmt, ...)
+    #define RUN_LOG_TRK(fmt, ...)
+    #define RUN_LOG_DBG(fmt, ...)
+#endif // defined(DEBUG) || defined(_DEBUG)
 
 template <typename T>
 bool string_to_type(const std::string & str, T & val)
@@ -102,7 +117,7 @@ public:
     ~RedisDBImpl();
 
 public:
-    bool open(const std::string & host, uint16_t port, const std::string & password, const std::string & table_index, uint32_t timeout);
+    bool open(const std::string & address, const std::string & username, const std::string & password, const std::string & table, uint32_t timeout);
     void close();
     bool destroy();
 
@@ -128,8 +143,18 @@ public:
     bool expire(const std::string & key, const std::string & seconds);
     bool expire(const std::list<std::string> & keys, const std::string & seconds);
 
+public:
+    bool push_back(const std::string & queue, const std::string & value);
+    bool pop_front(const std::string & queue, std::string & value);
+    template <typename T> bool push_back(const std::string & queue, T value);
+    template <typename T> bool pop_front(const std::string & queue, T & value);
+
+public:
+    bool clear(const std::string & queue);
+
 private:
     bool login();
+    void logoff();
     bool authenticate();
     bool select_table();
 
@@ -138,12 +163,13 @@ private:
 
 private:
     bool                            m_running;
-    std::string                     m_redis_host;
-    uint16_t                        m_redis_port;
+    std::string                     m_redis_address;
+    std::string                     m_redis_username;
     std::string                     m_redis_password;
-    std::string                     m_redis_table_index;
+    std::string                     m_redis_table;
     struct timeval                  m_redis_timeout;
     redisContext                  * m_redis_context;
+    redisClusterContext           * m_redis_cluster_context;
 };
 
 template <typename T>
@@ -160,15 +186,19 @@ bool RedisDBImpl::get(const std::string & key, T & value)
     return (get(key, str_value) && string_to_type(str_value, value));
 }
 
-#if defined(DEBUG) || defined(_DEBUG)
-    #define RUN_LOG_ERR(fmt, ...) printf(fmt "\n", ##__VA_ARGS__)
-    #define RUN_LOG_WAR(fmt, ...) printf(fmt "\n", ##__VA_ARGS__)
-    #define RUN_LOG_DBG(fmt, ...) printf(fmt "\n", ##__VA_ARGS__)
-#else
-    #define RUN_LOG_ERR(fmt, ...)
-    #define RUN_LOG_WAR(fmt, ...)
-    #define RUN_LOG_DBG(fmt, ...)
-#endif // defined(DEBUG) || defined(_DEBUG)
+template <typename T>
+bool RedisDBImpl::push_back(const std::string & queue, T value)
+{
+    std::string str_value;
+    return (type_to_string(value, str_value) && push_back(queue, str_value));
+}
+
+template <typename T>
+bool RedisDBImpl::pop_front(const std::string & queue, T & value)
+{
+    std::string str_value;
+    return (pop_front(queue, str_value) && string_to_type(str_value, value));
+}
 
 static int strcmp_ignore_case(const char * str1, const char * str2)
 {
@@ -181,12 +211,13 @@ static int strcmp_ignore_case(const char * str1, const char * str2)
 
 RedisDBImpl::RedisDBImpl()
     : m_running(false)
-    , m_redis_host("127.0.0.1")
-    , m_redis_port(6379)
+    , m_redis_address("127.0.0.1:6379")
+    , m_redis_username()
     , m_redis_password()
-    , m_redis_table_index("0")
+    , m_redis_table("0")
     , m_redis_timeout()
     , m_redis_context(nullptr)
+    , m_redis_cluster_context(nullptr)
 {
     m_redis_timeout.tv_sec = 5;
     m_redis_timeout.tv_usec = 0;
@@ -197,7 +228,7 @@ RedisDBImpl::~RedisDBImpl()
     close();
 }
 
-bool RedisDBImpl::open(const std::string & host, uint16_t port, const std::string & password, const std::string & table_index, uint32_t timeout)
+bool RedisDBImpl::open(const std::string & address, const std::string & username, const std::string & password, const std::string & table, uint32_t timeout)
 {
     close();
 
@@ -207,10 +238,10 @@ bool RedisDBImpl::open(const std::string & host, uint16_t port, const std::strin
     {
         m_running = true;
 
-        m_redis_host = host;
-        m_redis_port = port;
+        m_redis_address = address;
+        m_redis_username = username;
         m_redis_password = password;
-        m_redis_table_index = table_index;
+        m_redis_table = table;
         m_redis_timeout.tv_sec = timeout / 1000;
         m_redis_timeout.tv_usec = timeout % 1000 * 1000;
 
@@ -240,11 +271,7 @@ void RedisDBImpl::close()
 
         RUN_LOG_DBG("redis db exit begin");
 
-        if (nullptr != m_redis_context)
-        {
-            redisFree(m_redis_context);
-            m_redis_context = nullptr;
-        }
+        logoff();
 
         RUN_LOG_DBG("redis db exit end");
     }
@@ -252,32 +279,123 @@ void RedisDBImpl::close()
 
 bool RedisDBImpl::login()
 {
-    if (nullptr != m_redis_context)
+    if (nullptr != m_redis_context || nullptr != m_redis_cluster_context)
     {
         return (true);
     }
 
-    m_redis_context = redisConnectWithTimeout(m_redis_host.c_str(), m_redis_port, m_redis_timeout);
-    if (nullptr != m_redis_context && 0 == m_redis_context->err)
+    if (std::string::npos == m_redis_address.find(','))
     {
-        RUN_LOG_DBG("connect to redis server [%s:%d] success", m_redis_host.c_str(), m_redis_port);
-        if (authenticate() && select_table())
+        std::string redis_host;
+        uint16_t redis_port = 6379;
+        std::string::size_type pos = m_redis_address.find(':');
+        if (std::string::npos == pos)
         {
-            return (true);
+            redis_host = m_redis_address;
+        }
+        else
+        {
+            redis_host = m_redis_address.substr(0, pos);
+            string_to_type(m_redis_address.substr(pos + 1), redis_port);
+        }
+
+        m_redis_context = redisConnectWithTimeout(redis_host.c_str(), redis_port, m_redis_timeout);
+        if (nullptr != m_redis_context && 0 == m_redis_context->err)
+        {
+            RUN_LOG_DBG("connect redis server [%s] success", m_redis_address.c_str());
+            if (authenticate() && select_table())
+            {
+                return (true);
+            }
+        }
+        else
+        {
+            RUN_LOG_ERR("connect redis server [%s] failure (%s)", m_redis_address.c_str(), (nullptr != m_redis_context ? m_redis_context->errstr : "unknown"));
         }
     }
     else
     {
-        RUN_LOG_ERR("connect to redis server [%s:%d] failure (%s)", m_redis_host.c_str(), m_redis_port, (nullptr != m_redis_context ? m_redis_context->errstr : "unknown"));
+        do
+        {
+            m_redis_cluster_context = redisClusterContextInit();
+            if (nullptr == m_redis_cluster_context)
+            {
+                RUN_LOG_ERR("init redis cluster failure");
+                break;
+            }
+
+            int result = redisClusterSetOptionAddNodes(m_redis_cluster_context, m_redis_address.c_str());
+            if (REDIS_OK != result)
+            {
+                RUN_LOG_ERR("set redis cluster nodes [%s] failure (%s)", m_redis_address.c_str(), m_redis_cluster_context->errstr);
+                break;
+            }
+
+            if (!m_redis_username.empty())
+            {
+                result = redisClusterSetOptionUsername(m_redis_cluster_context, m_redis_username.c_str());
+                if (REDIS_OK != result)
+                {
+                    RUN_LOG_ERR("set redis cluster username [%s] failure (%s)", m_redis_username.c_str(), m_redis_cluster_context->errstr);
+                    break;
+                }
+            }
+
+            if (!m_redis_password.empty())
+            {
+                result = redisClusterSetOptionPassword(m_redis_cluster_context, m_redis_password.c_str());
+                if (REDIS_OK != result)
+                {
+                    RUN_LOG_ERR("set redis cluster password [%s] failure (%s)", m_redis_password.c_str(), m_redis_cluster_context->errstr);
+                    break;
+                }
+            }
+
+            result = redisClusterSetOptionConnectTimeout(m_redis_cluster_context, m_redis_timeout);
+            if (REDIS_OK != result)
+            {
+                RUN_LOG_ERR("set redis cluster timeout failure (%s)", m_redis_cluster_context->errstr);
+                break;
+            }
+
+            result = redisClusterSetOptionRouteUseSlots(m_redis_cluster_context);
+            if (REDIS_OK != result)
+            {
+                RUN_LOG_ERR("set redis cluster slots failure (%s)", m_redis_cluster_context->errstr);
+                break;
+            }
+
+            result = redisClusterConnect2(m_redis_cluster_context);
+            if (REDIS_OK != result)
+            {
+                RUN_LOG_ERR("connect redis cluster [%s] failure (%s)", m_redis_address.c_str(), m_redis_cluster_context->errstr);
+                break;
+            }
+
+            RUN_LOG_DBG("connect redis cluster [%s] success", m_redis_address.c_str());
+
+            return (true);
+        } while (false);
     }
 
+    logoff();
+
+    return (false);
+}
+
+void RedisDBImpl::logoff()
+{
     if (nullptr != m_redis_context)
     {
         redisFree(m_redis_context);
         m_redis_context = nullptr;
     }
 
-    return (false);
+    if (nullptr != m_redis_cluster_context)
+    {
+        redisClusterFree(m_redis_cluster_context);
+        m_redis_cluster_context = nullptr;
+    }
 }
 
 bool RedisDBImpl::execute_command(const std::list<std::string> & args, int return_type, void * result)
@@ -304,12 +422,22 @@ bool RedisDBImpl::execute_command(const std::list<std::string> & args, int retur
         arg_ptr.push_back(arg.c_str());
         arg_len.push_back(arg.size());
     }
-    redisReply * redis_reply = (redisReply *)redisCommandArgv(m_redis_context, args.size(), &arg_ptr[0], &arg_len[0]);
+    const char * redis_name = nullptr;
+    redisReply * redis_reply = nullptr;
+    if (nullptr != m_redis_context)
+    {
+        redis_name = "server";
+        redis_reply = reinterpret_cast<redisReply *>(redisCommandArgv(m_redis_context, static_cast<int>(args.size()), &arg_ptr[0], &arg_len[0]));
+    }
+    else
+    {
+        redis_name = "cluster";
+        redis_reply = reinterpret_cast<redisReply *>(redisClusterCommandArgv(m_redis_cluster_context, static_cast<int>(args.size()), &arg_ptr[0], &arg_len[0]));
+    }
     if (nullptr == redis_reply)
     {
-        RUN_LOG_ERR("redis execute command [%s] failure", command.c_str());
-        redisFree(m_redis_context);
-        m_redis_context = nullptr;
+        RUN_LOG_ERR("redis %s execute command [%s] failure", redis_name, command.c_str());
+        logoff();
         return (false);
     }
 
@@ -339,7 +467,7 @@ bool RedisDBImpl::execute_command(const std::list<std::string> & args, int retur
             }
             case REDIS_REPLY_INTEGER:
             {
-                ret = (1 == redis_reply->integer);
+                ret = (redis_reply->integer > 0);
                 break;
             }
             case REDIS_REPLY_NIL:
@@ -362,28 +490,27 @@ bool RedisDBImpl::execute_command(const std::list<std::string> & args, int retur
                 break;
             }
         }
+
+        if (ret)
+        {
+            RUN_LOG_DBG("redis execute command [%s] success", command.c_str());
+        }
+        else if (good)
+        {
+            RUN_LOG_TRK("redis execute command [%s] failure (%s)", command.c_str(), (REDIS_REPLY_ERROR == redis_reply->type ? redis_reply->str : "unknown"));
+        }
+        else
+        {
+            RUN_LOG_ERR("redis execute command [%s] exception (%s)", command.c_str(), (REDIS_REPLY_ERROR == redis_reply->type ? redis_reply->str : "unknown"));
+        }
     }
 
     freeReplyObject(redis_reply);
 
-    if (ret)
-    {
-        RUN_LOG_DBG("redis execute command [%s] success", command.c_str());
-    }
-    else if (good)
-    {
-        RUN_LOG_WAR("redis execute command [%s] failure (%s)", command.c_str(), (REDIS_REPLY_ERROR == redis_reply->type ? redis_reply->str : "unknown"));
-    }
-    else
-    {
-        RUN_LOG_ERR("redis execute command [%s] exception (%s)", command.c_str(), (REDIS_REPLY_ERROR == redis_reply->type ? redis_reply->str : "unknown"));
-    }
-
     if (!good)
     {
-        RUN_LOG_DBG("disconnect to redis server");
-        redisFree(m_redis_context);
-        m_redis_context = nullptr;
+        RUN_LOG_DBG("disconnect to redis %s", redis_name);
+        logoff();
     }
 
     return (ret);
@@ -405,7 +532,7 @@ bool RedisDBImpl::select_table()
 {
     std::list<std::string> args;
     args.push_back("select");
-    args.push_back(m_redis_table_index);
+    args.push_back(m_redis_table);
     return (execute_command(args, REDIS_REPLY_STATUS, nullptr));
 }
 
@@ -443,6 +570,11 @@ bool RedisDBImpl::find(const std::string & key)
 
 bool RedisDBImpl::find(const std::string & pattern, std::list<std::string> & keys)
 {
+    if (nullptr != m_redis_cluster_context)
+    {
+        RUN_LOG_ERR("redis cluster not support find pattern");
+        return (false);
+    }
     std::list<std::string> args;
     args.push_back("keys");
     args.push_back(pattern);
@@ -513,6 +645,28 @@ bool RedisDBImpl::expire(const std::list<std::string> & keys, const std::string 
     return (ret);
 }
 
+bool RedisDBImpl::push_back(const std::string & queue, const std::string & value)
+{
+    std::list<std::string> args;
+    args.push_back("rpush");
+    args.push_back(queue);
+    args.push_back(value);
+    return (execute_command(args, REDIS_REPLY_INTEGER, nullptr));
+}
+
+bool RedisDBImpl::pop_front(const std::string & queue, std::string & value)
+{
+    std::list<std::string> args;
+    args.push_back("lpop");
+    args.push_back(queue);
+    return (execute_command(args, REDIS_REPLY_STRING, &value));
+}
+
+bool RedisDBImpl::clear(const std::string & queue)
+{
+    return (erase(queue));
+}
+
 RedisDB::RedisDB() : m_redis_db_impl(nullptr)
 {
 
@@ -523,15 +677,15 @@ RedisDB::~RedisDB()
     close();
 }
 
-bool RedisDB::open(const std::string & host, uint16_t port, const std::string & password, uint16_t table_index, uint32_t timeout)
+bool RedisDB::open(const std::string & address, const std::string & username, const std::string & password, uint16_t table, uint32_t timeout)
 {
     close();
 
-    std::string str_table_index("0");
-    type_to_string(table_index, str_table_index);
+    std::string str_table("0");
+    type_to_string(table, str_table);
 
     m_redis_db_impl = new RedisDBImpl;
-    if (nullptr != m_redis_db_impl && m_redis_db_impl->open(host, port, password, str_table_index, timeout))
+    if (nullptr != m_redis_db_impl && m_redis_db_impl->open(address, username, password, str_table, timeout))
     {
         return (true);
     }
@@ -721,4 +875,134 @@ bool RedisDB::get(const std::string & key, float & value)
 bool RedisDB::get(const std::string & key, double & value)
 {
     return (nullptr != m_redis_db_impl && m_redis_db_impl->get(key, value));
+}
+
+bool RedisDB::clear(const std::string & queue)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->clear(queue));
+}
+
+bool RedisDB::push_back(const std::string & queue, const char * value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, const std::string & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, bool value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, int8_t value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, uint8_t value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, int16_t value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, uint16_t value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, int32_t value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, uint32_t value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, int64_t value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, uint64_t value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, float value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::push_back(const std::string & queue, double value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->push_back(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, std::string & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, bool & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, int8_t & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, uint8_t & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, int16_t & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, uint16_t & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, int32_t & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, uint32_t & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, int64_t & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, uint64_t & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, float & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
+}
+
+bool RedisDB::pop_front(const std::string & queue, double & value)
+{
+    return (nullptr != m_redis_db_impl && m_redis_db_impl->pop_front(queue, value));
 }

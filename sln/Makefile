@@ -1,5 +1,5 @@
 # arguments
-platform = linux/x64
+platform = centos
 
 
 
@@ -7,7 +7,7 @@ project_home       = ..
 build_dir          = $(project_home)/sln
 bin_dir            = $(project_home)/lib/$(platform)
 object_dir         = $(project_home)/.objs
-hiredis_home       = $(project_home)/../tools/gnu_libs/hiredis
+hiredis_home       = $(project_home)/../gnu_libs/hiredis_1.2.0
 
 
 
@@ -24,6 +24,7 @@ libredis_includes  = -I$(libredis_inc_path)
 # all includes that libredis solution needs
 includes           = $(hiredis_includes)
 includes          += $(libredis_includes)
+includes          += $(libredis_includes)/cluster
 
 
 
@@ -31,12 +32,14 @@ includes          += $(libredis_includes)
 
 # source files of libredis project
 libredis_src_path  = $(project_home)/src
-libredis_source    = $(filter %.cpp, $(shell find $(libredis_src_path) -depth -name "*.cpp"))
+libredis_c_source  = $(filter %.c, $(shell find $(libredis_src_path) -depth -name "*.c"))
+libredis_x_source  = $(filter %.cpp, $(shell find $(libredis_src_path) -depth -name "*.cpp"))
 
 
 
 # objects of libredis solution
-libredis_objects   = $(libredis_source:$(project_home)%.cpp=$(object_dir)%.o)
+libredis_objects   = $(libredis_c_source:$(project_home)%.c=$(object_dir)%.o)
+libredis_objects  += $(libredis_x_source:$(project_home)%.cpp=$(object_dir)%.o)
 
 
 
@@ -66,6 +69,7 @@ targets            = redis
 build    : $(targets)
 
 redis    : $(libredis_objects)
+	mkdir -p $(bin_dir)
 	@echo
 	@echo "@@@@@  start making libredis  @@@@@"
 	ar $(build_a_flags) $(libredis_output_lib) $^
@@ -75,10 +79,17 @@ redis    : $(libredis_objects)
 # build all objects
 $(object_dir)/%.o:$(project_home)/%.cpp
 	@dir=`dirname $@`;      \
-    if [ ! -d $$dir ]; then \
-        mkdir -p $$dir;     \
-    fi
+	if [ ! -d $$dir ]; then \
+		mkdir -p $$dir;     \
+	fi
 	g++ -c $(build_obj_flags) $(includes) -o $@ $<
+
+$(object_dir)/%.o:$(project_home)/%.c
+	@dir=`dirname $@`;	\
+	if [ ! -d $$dir ]; then	\
+		mkdir -p $$dir;	\
+	fi
+	gcc -c -g -O1 -pipe -fPIC $(c_no_warnings) $(includes) -o $@ $<
 
 clean    :
 	rm -rf $(object_dir) $(bin_dir)/lib*

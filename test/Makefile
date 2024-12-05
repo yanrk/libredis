@@ -1,14 +1,14 @@
 # arguments
-platform = linux/x64
+platform = centos
 
 
 
 project_home       = .
 build_dir          = $(project_home)
-bin_dir            = $(project_home)/lib/$(platform)
+bin_dir            = $(project_home)/bin/$(platform)
 object_dir         = $(project_home)/.objs
 libredis_home      = $(project_home)/..
-hiredis_home       = $(libredis_home)/../tools/gnu_libs/hiredis
+hiredis_home       = $(libredis_home)/../gnu_libs/hiredis
 
 
 
@@ -68,6 +68,7 @@ targets            = test
 build    : $(targets)
 
 test     : $(test_objects)
+	mkdir -p $(bin_dir)
 	@echo "includes is $(includes)"
 	@echo "@@@@@  start making test  @@@@@"
 	g++ $(build_exec_flags) -o $(output_exec) $^ $(depend_libs)

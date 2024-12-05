@@ -22,6 +22,18 @@
 #include <iostream>
 #include "libredis.h"
 
+#define TEST_CLUSTER
+
+#ifdef TEST_CLUSTER
+    #define SERVER      "172.16.7.25:6379,172.16.7.25:6380,172.16.7.25:6381,172.16.7.25:6382,172.16.7.25:6383,172.16.7.25:6384"
+    #define USERNAME    ""
+    #define PASSWORD    "abc123"
+#else
+    #define SERVER      "127.0.0.1:6379"
+    #define USERNAME    ""
+    #define PASSWORD    ""
+#endif // TEST_CLUSTER
+
 class Directory
 {
 public:
@@ -321,10 +333,10 @@ static std::string get_file_value(const std::string & filename)
     return (filename + "|" + filetime + "|" + filesize);
 }
 
-static bool set_file_to_redis(const std::list<std::string> & file_list, uint16_t table_index, int64_t expire_seconds)
+static bool set_file_to_redis(const std::list<std::string> & file_list, uint16_t table, int64_t expire_seconds)
 {
     RedisDB redis_db;
-    if (!redis_db.open("127.0.0.1", 6379, "", table_index, 5000))
+    if (!redis_db.open(SERVER, USERNAME, PASSWORD, table, 5000))
     {
         std::cout << "open redis db failed" << std::endl;
         return (false);
@@ -347,10 +359,10 @@ static bool set_file_to_redis(const std::list<std::string> & file_list, uint16_t
     return (true);
 }
 
-static bool get_file_from_redis(const std::list<std::string> & file_list, uint16_t table_index, int64_t expire_seconds)
+static bool get_file_from_redis(const std::list<std::string> & file_list, uint16_t table, int64_t expire_seconds)
 {
     RedisDB redis_db;
-    if (!redis_db.open("127.0.0.1", 6379, "", table_index, 5000))
+    if (!redis_db.open(SERVER, USERNAME, PASSWORD, table, 5000))
     {
         std::cout << "open redis db failed" << std::endl;
         return (false);
@@ -378,10 +390,10 @@ static bool get_file_from_redis(const std::list<std::string> & file_list, uint16
     return (true);
 }
 
-static bool find_file_from_redis(const std::list<std::string> & file_list, uint16_t table_index)
+static bool find_file_from_redis(const std::list<std::string> & file_list, uint16_t table)
 {
     RedisDB redis_db;
-    if (!redis_db.open("127.0.0.1", 6379, "", table_index, 5000))
+    if (!redis_db.open(SERVER, USERNAME, PASSWORD, table, 5000))
     {
         std::cout << "open redis db failed" << std::endl;
         return (false);
@@ -399,10 +411,10 @@ static bool find_file_from_redis(const std::list<std::string> & file_list, uint1
     return (true);
 }
 
-static bool erase_file_from_redis(const std::list<std::string> & file_list, uint16_t table_index)
+static bool erase_file_from_redis(const std::list<std::string> & file_list, uint16_t table)
 {
     RedisDB redis_db;
-    if (!redis_db.open("127.0.0.1", 6379, "", table_index, 5000))
+    if (!redis_db.open(SERVER, USERNAME, PASSWORD, table, 5000))
     {
         std::cout << "open redis db failed" << std::endl;
         return (false);
@@ -420,10 +432,10 @@ static bool erase_file_from_redis(const std::list<std::string> & file_list, uint
     return (true);
 }
 
-static bool clear_file_from_redis(const std::list<std::string> & file_list, uint16_t table_index)
+static bool clear_file_from_redis(const std::list<std::string> & file_list, uint16_t table)
 {
     RedisDB redis_db;
-    if (!redis_db.open("127.0.0.1", 6379, "", table_index, 5000))
+    if (!redis_db.open(SERVER, USERNAME, PASSWORD, table, 5000))
     {
         std::cout << "open redis db failed" << std::endl;
         return (false);
@@ -462,12 +474,107 @@ static uint64_t get_time_delta(const struct timeval & lhs, const struct timeval 
 bool test_correctness()
 {
     RedisDB redis_db;
-    if (!redis_db.open("127.0.0.1", 6379, "", 0, 5000))
+    if (!redis_db.open(SERVER, USERNAME, PASSWORD, 5000, 0))
     {
         std::cout << "open redis db failed" << std::endl;
         return (false);
     }
 
+#ifdef TEST_CLUSTER
+    if (!redis_db.push_back("test-queue-1", "111"))
+    {
+        std::cout << "redis db push back failed" << std::endl;
+        return (false);
+    }
+
+    if (!redis_db.push_back("test-queue-1", "222"))
+    {
+        std::cout << "redis db push back failed" << std::endl;
+        return (false);
+    }
+
+    if (!redis_db.push_back("test-queue-1", "333"))
+    {
+        std::cout << "redis db push back failed" << std::endl;
+        return (false);
+    }
+
+    if (!redis_db.push_back("test-queue-1", "444"))
+    {
+        std::cout << "redis db push back failed" << std::endl;
+        return (false);
+    }
+
+    if (!redis_db.push_back("test-queue-1", "555"))
+    {
+        std::cout << "redis db push back failed" << std::endl;
+        return (false);
+    }
+
+    std::string str;
+
+    if (!redis_db.pop_front("test-queue-1", str))
+    {
+        std::cout << "redis db pop front failed" << std::endl;
+        return (false);
+    }
+    else if ("111" != str)
+    {
+        std::cout << "redis db pop front exception" << std::endl;
+        return (false);
+    }
+
+    if (!redis_db.pop_front("test-queue-1", str))
+    {
+        std::cout << "redis db pop front failed" << std::endl;
+        return (false);
+    }
+    else if ("222" != str)
+    {
+        std::cout << "redis db pop front exception" << std::endl;
+        return (false);
+    }
+
+    if (!redis_db.pop_front("test-queue-1", str))
+    {
+        std::cout << "redis db pop front failed" << std::endl;
+        return (false);
+    }
+    else if ("333" != str)
+    {
+        std::cout << "redis db pop front exception" << std::endl;
+        return (false);
+    }
+
+    if (!redis_db.pop_front("test-queue-1", str))
+    {
+        std::cout << "redis db pop front failed" << std::endl;
+        return (false);
+    }
+    else if ("444" != str)
+    {
+        std::cout << "redis db pop front exception" << std::endl;
+        return (false);
+    }
+
+    if (!redis_db.pop_front("test-queue-1", str))
+    {
+        std::cout << "redis db pop front failed" << std::endl;
+        return (false);
+    }
+    else if ("555" != str)
+    {
+        std::cout << "redis db pop front exception" << std::endl;
+        return (false);
+    }
+
+    if (redis_db.pop_front("test-queue-1", str))
+    {
+        std::cout << "redis db pop front failed" << std::endl;
+        return (false);
+    }
+
+#else
     if (!redis_db.set("c:/abc 123 xyz/111", "test data 1"))
     {
         std::cout << "redis db set failed" << std::endl;
@@ -584,6 +691,7 @@ bool test_correctness()
         std::cout << "redis db persist exception" << std::endl;
         return (false);
     }
+#endif // TEST_CLUSTER
 
     redis_db.close();
 
